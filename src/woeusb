@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A Linux program to create bootable Windows USB stick from a real Windows DVD or an image
 # Copyright © 2013 Colin GILLE / congelli501
-# Copyright © 2018 slacka et. al.
+# Copyright © 2018-2020 slacka et. al.
 #
 # This file is part of WoeUSB.
 #
@@ -160,18 +160,14 @@ init(){
 	# due to different names in distributions
 	declare \
 		command_mkdosfs \
-		command_mkntfs \
-		command_grubinstall \
-		name_grub_prefix
+		command_mkntfs
 
 	declare new_file_system_label="${DEFAULT_NEW_FS_LABEL}"
 
 	if ! check_runtime_dependencies \
 		"${application_name}" \
 		command_mkdosfs \
-		command_mkntfs \
-		command_grubinstall \
-		name_grub_prefix; then
+		command_mkntfs; then
 		exit 1
 	fi
 
@@ -319,15 +315,6 @@ init(){
 	workaround_support_windows_7_uefi_boot \
 		"${source_fs_mountpoint}" \
 		"${target_fs_mountpoint}"
-
-	install_legacy_pc_bootloader_grub \
-		"${target_fs_mountpoint}" \
-		"${target_device}" \
-		"${command_grubinstall}"
-
-	install_legacy_pc_bootloader_grub_config \
-		"${target_fs_mountpoint}" \
-		"${name_grub_prefix}"
 
 	if [ "${workaround_bios_boot_flag}" == true ]; then
 		workaround_buggy_motherboards_that_ignore_disks_without_boot_flag_toggled \
@@ -702,12 +689,10 @@ process_miscellaneous_requests(){
 }; declare -fr process_miscellaneous_requests
 
 check_runtime_dependencies(){
-	util_check_function_parameters_quantity 5 $#
+	util_check_function_parameters_quantity 3 $#
 	local -r application_name="$1"; shift
 	local -n command_mkdosfs_ref="$1"; shift
 	local -n command_mkntfs_ref="$1"; shift
-	local -n command_grubinstall_ref="$1"; shift
-	local -n name_grub_prefix_ref="$1"
 
 	local result=unknown
 
@@ -763,21 +748,6 @@ check_runtime_dependencies(){
 			"${FUNCNAME[0]}: Error: Please make sure that ntfs-3g is properly installed!"
 		result=failed
 	fi
-
-    	if command -v grub-install.unsupported &> /dev/null; then
-        	command_grubinstall_ref=grub-install.unsupported
-        	name_grub_prefix_ref=grub
-    	elif command -v grub-install &> /dev/null; then
-        	command_grubinstall_ref=grub-install
-        	name_grub_prefix_ref=grub
-    	elif command -v grub2-install &> /dev/null; then
-        	command_grubinstall_ref=grub2-install
-        	name_grub_prefix_ref=grub2
-    	else
-        	echo_with_color red "${FUNCNAME[0]}: Error: grub-install or grub2-install command not found!" >&2
-        	echo_with_color red "${FUNCNAME[0]}: Error: Please make sure that GNU GRUB is properly installed!" >&2
-        	result=failed
-    	fi
 
 	if [ "${result}" == failed ]; then
 		return 1
@@ -1072,8 +1042,7 @@ create_target_partition(){
 		'Creating target partition...'
 
 	# Create target partition
-	# We start at 4MiB for grub (it needs a post-mbr gap for its code) and alignment of flash memery block erase segment in general, for details see http://www.gnu.org/software/grub/manual/grub.html#BIOS-installation and http://lwn.net/Articles/428584/
-	# If NTFS filesystem is used we leave a 512KiB partition at the end for installing UEFI:NTFS partition for NTFS support
+	# If NTFS filesystem is used we leave a 512KiB partition at the end for installing UEFI:NTFS partition for NTFS support.
 	case "${parted_mkpart_fs_type}" in
 		fat32)
 			parted --script \
@@ -1183,23 +1152,6 @@ install_uefi_ntfs_support_partition(){
 		of="${uefi_ntfs_partition}"
 
 }; declare -fr install_uefi_ntfs_support_partition
-
-## Some buggy BIOSes won't put detected device with valid MBR but no partitions with boot flag toggled into the boot menu, workaround this by setting the first partition's boot flag(which partition doesn't matter as GNU GRUB doesn't depend on it anyway
-workaround_buggy_motherboards_that_ignore_disks_without_boot_flag_toggled(){
-	util_check_function_parameters_quantity 1 $#
-
-	local -r target_device="$1"
-
-	printf_with_color \
-		yellow \
-		'%s\n' \
-		'Applying workaround for buggy motherboards that will ignore disks with no partitions with the boot flag toggled'
-	parted --script \
-		"${target_device}" \
-		set 1 boot on
-	
-	return $?
-}; declare -fr workaround_buggy_motherboards_that_ignore_disks_without_boot_flag_toggled
 
 ## Check every file in source directory for files bigger than max fat32 file size (~4GB)
 check_fat32_filesize_limitation(){
@@ -1413,8 +1365,6 @@ check_target_filesystem_free_space(){
 			"${source_fs_mountpoint}" \
 		| awk '{print $1}'
 	)
-	additional_space_required_for_grub_installation="$((1000 * 1000 * 10))" # 10MiB
-	((needed_space = needed_space + additional_space_required_for_grub_installation))
 
 	if [ "${needed_space}" -gt "${free_space}" ]; then
 		echo 'Error: Not enough free space on target partition!' >&2
@@ -1691,54 +1641,6 @@ workaround_linux_make_writeback_buffering_not_suck(){
 		;;
 	esac
 }; declare -fr workaround_linux_make_writeback_buffering_not_suck
-
-install_legacy_pc_bootloader_grub(){
-	util_check_function_parameters_quantity 3 "${#}"
-	local -r target_fs_mountpoint="${1}"; shift 1
-	local -r target_device="${1}"; shift 1
-	local -r command_grubinstall="${1}"
-
-	echo_with_color green 'Installing GRUB bootloader for legacy PC booting support...'
-	"${command_grubinstall}" \
-		--target=i386-pc \
-		--boot-directory="${target_fs_mountpoint}" \
-		--force "${target_device}"
-
-
-}; declare -fr install_legacy_pc_bootloader_grub
-
-## Install a GRUB config file to chainload Microsoft Windows's bootloader in Legacy PC bootmode
-## target_fs_mountpoint: Target filesystem's mountpoint(where GRUB is installed)
-## name_grub_prefix: May be different between distributions, so need to be specified (grub/grub2)
-install_legacy_pc_bootloader_grub_config(){
-	util_check_function_parameters_quantity 2 $#
-
-	local -r target_fs_mountpoint="$1"; shift
-	local -r name_grub_prefix="$1"
-
-	echo_with_color green 'Installing custom GRUB config for legacy PC booting...'
-	local -r grub_cfg="${target_fs_mountpoint}/${name_grub_prefix}/grub.cfg"
-	local target_fs_uuid; target_fs_uuid=$(
-		lsblk \
-			--noheadings \
-			--raw \
-			--output UUID,MOUNTPOINT \
-		| grep \
-			--extended-regexp \
-			"${target_fs_mountpoint}"$ \
-		| cut \
-			--fields=1 \
-			--delimiter=' '
-	)
-
-	mkdir --parents "$(dirname "${grub_cfg}")"
-	{
-		cat <<- END_OF_FILE
-			ntldr /bootmgr
-			boot
-		END_OF_FILE
-	} > "${grub_cfg}"; unset target_fs_uuid
-}; declare -fr install_legacy_pc_bootloader_grub_config
 
 ## Unmount mounted filesystem and clean-up mountpoint before exiting program
 ## return_value: 1 - Failed to unmount / 2 - Failed to remove mountpoint
